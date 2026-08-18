@@ -58,11 +58,11 @@
         <ul class="dropdown-menu {{ 'dropdown-menu-dark' if dark }} {{ 'dropdown-menu-end' if right }}">
             {% if current_user %}
                 {% if current_user.is_authenticated %}
-                    <li><a href="{{ url_for('hydra.logout') }}" class="dropdown-item">
+                    <li><a href="{{ url_for('auth.logout') }}" class="dropdown-item">
                         Log out {{ current_user.email }}
                     </a></li>
                 {% else %}
-                    <li><a href="{{ url_for('hydra.login') }}" class="dropdown-item">
+                    <li><a href="{{ url_for('auth.login') }}" class="dropdown-item">
                         Log in
                     </a></li>
                 {% endif %}

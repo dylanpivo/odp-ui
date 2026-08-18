@@ -90,14 +90,16 @@ class ODPUserClient(ODPBaseClient):
     def __init__(
             self,
             api_url: str,
-            hydra_url: str,
-            client_id: str,
-            client_secret: str,
-            scope: list[str],
-            cache: Redis,
-            app: Flask,
+            hydra_url: str = None,
+            client_id: str = None,
+            client_secret: str = None,
+            scope: list[str] = None,
+            cache: Redis = None,
+            app: Flask = None,
+            auth_url: str = None,
     ) -> None:
-        super().__init__(api_url, hydra_url, client_id, client_secret, scope)
+        auth_server_url = auth_url or hydra_url
+        super().__init__(api_url, auth_server_url, client_id, client_secret, scope)
         self.cache = cache
         self.oauth = OAuth(
             app=app,
@@ -109,15 +111,22 @@ class ODPUserClient(ODPBaseClient):
             name='hydra',
             client_id=client_id,
             client_secret=client_secret,
-            client_kwargs={'scope': ' '.join(scope)},
-            server_metadata_url=f'{hydra_url}/.well-known/openid-configuration',
+            client_kwargs={'scope': ' '.join(scope or [])},
+            server_metadata_url=f'{auth_server_url}/.well-known/openid-configuration',
         )
 
-        app.add_url_rule('/oauth2/signup', endpoint='hydra.signup', view_func=self._signup)
-        app.add_url_rule('/oauth2/login', endpoint='hydra.login', view_func=self._login)
-        app.add_url_rule('/oauth2/logout', endpoint='hydra.logout', view_func=self._logout)
-        app.add_url_rule('/oauth2/logged_in', endpoint='hydra.logged_in', view_func=self._logged_in)
-        app.add_url_rule('/oauth2/logged_out', endpoint='hydra.logged_out', view_func=self._logged_out)
+        app.add_url_rule('/oauth2/signup', endpoint='auth.signup', view_func=self._signup)
+        app.add_url_rule('/oauth2/login', endpoint='auth.login', view_func=self._login)
+        app.add_url_rule('/oauth2/logout', endpoint='auth.logout', view_func=self._logout)
+        app.add_url_rule('/oauth2/logged_in', endpoint='auth.logged_in', view_func=self._logged_in)
+        app.add_url_rule('/oauth2/logged_out', endpoint='auth.logged_out', view_func=self._logged_out)
+
+        # Aliases for backward compatibility
+        app.add_url_rule('/oauth2/hydra/signup', endpoint='hydra.signup', view_func=self._signup)
+        app.add_url_rule('/oauth2/hydra/login', endpoint='hydra.login', view_func=self._login)
+        app.add_url_rule('/oauth2/hydra/logout', endpoint='hydra.logout', view_func=self._logout)
+        app.add_url_rule('/oauth2/hydra/logged_in', endpoint='hydra.logged_in', view_func=self._logged_in)
+        app.add_url_rule('/oauth2/hydra/logged_out', endpoint='hydra.logged_out', view_func=self._logged_out)
 
         login_manager = LoginManager(app)
 
@@ -159,21 +168,28 @@ class ODPUserClient(ODPBaseClient):
         return self.oauth.hydra.authorize_redirect(redirect_uri, mode='login')
 
     def _logged_in(self):
-        """Callback from Hydra after a successful login via the identity service.
+        """Callback from Hydra/Keycloak after a successful login.
 
         Fetch and cache the token, user info and permissions, and log the user
         in to the app.
         """
         token = self.oauth.hydra.authorize_access_token()
-        userinfo = token.pop('userinfo')
+        userinfo = token.pop('userinfo', {}) or {}
+
+        user_id = userinfo.get('sub') or userinfo.get('email')
+        name = userinfo.get('name') or f"{userinfo.get('given_name', '')} {userinfo.get('family_name', '')}".strip() or userinfo.get('preferred_username') or userinfo.get('email', '')
+        email = userinfo.get('email') or userinfo.get('preferred_username', '')
+        verified = userinfo.get('email_verified', True)
+        picture = userinfo.get('picture')
+        roles = userinfo.get('roles') or userinfo.get('realm_access', {}).get('roles', [])
 
         localuser = LocalUser(
-            id=(user_id := userinfo['sub']),
-            name=userinfo['name'],
-            email=userinfo['email'],
-            verified=userinfo['email_verified'],
-            picture=userinfo['picture'],
-            role_ids=userinfo['roles'],
+            id=user_id,
+            name=name,
+            email=email,
+            verified=verified,
+            picture=picture,
+            role_ids=roles,
             active=True,  # we'll only get to this point if the user is active
         )
 
@@ -202,16 +218,18 @@ class ODPUserClient(ODPBaseClient):
     def _logout(self):
         """Initiate logout.
 
-        Return a redirect to the Hydra endsession endpoint.
+        Return a redirect to the OIDC endsession endpoint.
         """
-        redirect_uri = url_for('hydra.logged_out', _external=True)
+        redirect_uri = url_for('auth.logged_out', _external=True)
 
         if user_id := current_user.get_id():
             state_val = secrets.token_urlsafe()
             self.cache.set(self._cache_key(user_id, 'state'), state_val, ex=10)
-            url = f'{self.hydra_url}/oauth2/sessions/logout' \
-                  f'?id_token_hint={self.token.get("id_token")}' \
-                  f'&post_logout_redirect_uri={redirect_uri}' \
+            id_token = self.token.get("id_token", "")
+            auth_server_url = getattr(self, 'auth_url', None) or self.hydra_url
+            url = f'{auth_server_url}/protocol/openid-connect/logout' \
+                  f'?post_logout_redirect_uri={redirect_uri}' \
+                  f'&id_token_hint={id_token}' \
                   f'&state={state_val}'
 
             return redirect(url)
@@ -324,7 +342,7 @@ def _handle_error(e: ODPAPIError) -> Response | None:
 
     if e.status_code == 401:
         flash('Your session has expired. Please log in again to continue.', category='error')
-        return redirect(url_for('hydra.logout'))
+        return redirect(url_for('auth.logout'))
 
     if e.status_code == 403:
         flash('You do not have permission to access that page.', category='warning')

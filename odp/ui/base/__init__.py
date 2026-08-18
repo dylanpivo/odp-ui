@@ -47,7 +47,7 @@ def init_app(
         global api
         api = ODPUserClient(
             api_url=config.ODP.API_URL,
-            hydra_url=config.HYDRA.PUBLIC.URL,
+            hydra_url=config.AUTH.URL,
             client_id=app.config['UI_CLIENT_ID'],
             client_secret=app.config['UI_CLIENT_SECRET'],
             scope=app.config['UI_CLIENT_SCOPE'],
@@ -58,13 +58,14 @@ def init_app(
                 decode_responses=True,
             ),
             app=app,
+            auth_url=config.AUTH.URL,
         )
 
     if client_api:
         global cli
         cli = ODPAnonClient(
             api_url=config.ODP.API_URL,
-            hydra_url=config.HYDRA.PUBLIC.URL,
+            hydra_url=config.AUTH.URL,
             client_id=app.config['CI_CLIENT_ID'],
             client_secret=app.config['CI_CLIENT_SECRET'],
             scope=app.config['CI_CLIENT_SCOPE'],
